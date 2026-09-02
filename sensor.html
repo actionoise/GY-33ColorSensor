@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Walkeremote MQTT Color Display</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://unpkg.com/html5-qrcode"></script>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, Helvetica, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:20px; background:#111827; color:#e5e7eb; }
+    .container { max-width:900px; margin:0 auto; }
+    .panel { background:#1f2937; border:1px solid #374151; border-radius:12px; padding:18px; margin-bottom:18px; }
+    .status-line { display:flex; align-items:center; gap:10px; font-weight:700; }
+    .status-dot { width:13px; height:13px; border-radius:50%; background:#ef4444; }
+    .status-dot.connected { background:#22c55e; }
+    button { width:100%; border-radius:8px; border:1px solid #4b5563; padding:12px; font-size:16px; cursor:pointer; font-weight:700; background:#059669; color:white; }
+    button.secondary { background:#4b5563; }
+    button.danger { background:#b91c1c; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    #qrPanel, #manualPanel, #connectionPanel, #colorPanel, #consolePanel { display:none; }
+    #qrReader { width:100%; max-width:520px; margin:15px auto; background:#000; border-radius:12px; overflow:hidden; }
+    #qrResult { margin-top:10px; padding:10px; background:#111827; border:1px solid #374151; border-radius:8px; font-size:14px; word-break:break-word; }
+    .data-grid { display:grid; grid-template-columns:180px minmax(0,1fr); gap:8px 14px; margin-top:14px; }
+    .data-label { color:#94a3b8; font-weight:700; }
+    .data-value { color:#f9fafb; word-break:break-all; font-family:Consolas, Monaco, monospace; }
+    .buttons { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:15px; }
+    .form-grid { display:grid; grid-template-columns:160px minmax(0,1fr); gap:12px 14px; align-items:center; }
+    label { color:#cbd5e1; font-weight:700; }
+    input, select { width:100%; border:1px solid #4b5563; border-radius:8px; padding:11px; background:#111827; color:#f9fafb; font-size:16px; }
+    .form-error { min-height:20px; margin-top:12px; color:#fca5a5; font-weight:700; }
+    #sensorSquare {
+      width:min(78vw, 420px);
+      aspect-ratio:1;
+      margin:18px auto 12px;
+      background:#111827;
+      border:3px solid #64748b;
+      border-radius:8px;
+      box-shadow:0 0 28px rgba(0,0,0,.45);
+      transition:background-color .12s linear;
+    }
+    #commandName { text-align:center; margin-top:8px; font-size:22px; font-weight:700; }
+    #lastPayload { text-align:center; color:#94a3b8; font-family:Consolas, Monaco, monospace; word-break:break-all; }
+    #consoleOutput { min-height:120px; max-height:280px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; background:#020617; border:1px solid #334155; border-radius:8px; padding:12px; font-family:Consolas, Monaco, monospace; font-size:13px; line-height:1.5; }
+    @media (max-width:700px) {
+      body { padding:12px; }
+      .data-grid, .buttons, .form-grid { grid-template-columns:1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h3>Scansiona il QR della Pilot Station Walkeremote</h3>
+
+  <div class="panel" id="startPanel">
+    <div class="status-line">
+      <span id="statusDot" class="status-dot"></span>
+      <span id="statusText">Non configurato</span>
+    </div>
+    <div class="buttons">
+      <button id="scanQrBtn">📷 Scansiona QR Walkeremote</button>
+      <button id="manualBtn" class="secondary">⌨️ Inserisci dati MQTT</button>
+    </div>
+  </div>
+
+  <div class="panel" id="manualPanel">
+    <h2>Configurazione MQTT manuale</h2>
+    <div class="form-grid">
+      <label for="manualBroker">Broker WebSocket</label>
+      <input id="manualBroker" type="url" placeholder="wss://broker.example.com:8084/mqtt" autocomplete="url">
+
+      <label for="manualUsername">Username</label>
+      <input id="manualUsername" type="text" autocomplete="username">
+
+      <label for="manualPassword">Password</label>
+      <input id="manualPassword" type="password" autocomplete="current-password">
+
+      <label for="manualTopic">Topic</label>
+      <input id="manualTopic" type="text" placeholder="walkeremote/comandi" autocomplete="off">
+
+      <label for="manualQos">QoS</label>
+      <select id="manualQos">
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+      </select>
+    </div>
+    <div id="manualError" class="form-error"></div>
+    <div class="buttons">
+      <button id="manualConnectBtn">Connetti a MQTT</button>
+      <button id="manualCancelBtn" class="secondary">Annulla</button>
+    </div>
+  </div>
+
+  <div class="panel" id="qrPanel">
+    <h2>Scansione QR</h2>
+    <div id="qrReader"></div>
+    <div id="qrResult">Scanner pronto.</div>
+    <div class="buttons">
+      <button id="closeQrBtn" class="danger">Chiudi scanner</button>
+    </div>
+  </div>
+
+  <div class="panel" id="connectionPanel">
+    <h2>Connessione MQTT</h2>
+    <div class="data-grid">
+      <div class="data-label">Broker</div><div class="data-value" id="viewBroker">-</div>
+      <div class="data-label">MQTT Username</div><div class="data-value" id="viewUsername">-</div>
+      <div class="data-label">Topic</div><div class="data-value" id="viewTopic">-</div>
+      <div class="data-label">QoS</div><div class="data-value" id="viewQos">-</div>
+      <div class="data-label">Client ID</div><div class="data-value" id="viewClientId">-</div>
+    </div>
+    <div class="buttons">
+      <button id="disconnectBtn" class="danger" disabled>Disconnetti</button>
+      <button id="scanAgainBtn" class="secondary">Scansiona un altro QR</button>
+    </div>
+  </div>
+
+  <div class="panel" id="colorPanel">
+    <h2>Colore comando MQTT</h2>
+    <p>Appoggia il sensore GY-33 al centro del quadrato.</p>
+    <div id="sensorSquare" aria-label="Area colore per sensore GY-33"></div>
+    <div id="commandName">In attesa di un comando</div>
+    <div id="lastPayload">-</div>
+  </div>
+
+  <div class="panel" id="consolePanel">
+    <h2>MQTT Console</h2>
+    <div id="consoleOutput"></div>
+  </div>
+</div>
+
+<script>
+let client = null;
+let currentSubscribedTopic = "";
+let html5QrCode = null;
+let qrScannerRunning = false;
+let qrAlreadyRead = false;
+let mqttConfig = null;
+
+const COMMAND_COLORS = [
+  { code:"79452",  name:"DESTRA",        color:"#ff0000" },
+  { code:"88732",  name:"SINISTRA",      color:"#00ff00" },
+  { code:"957231", name:"INDIETRO",      color:"#0000ff" },
+  { code:"332001", name:"AVANTI",        color:"#00ffff" },
+  { code:"398554", name:"STOP",          color:"#ff00ff" },
+  { code:"3395",   name:"DOCK",          color:"#ffff00" },
+  { code:"5888",   name:"MOTORI PULIZIA",color:"#ff8000" },
+  { code:"4350",   name:"CLEAN",         color:"#ffffff" },
+  { code:"7733",   name:"SPOT",          color:"#8000ff" },
+  { code:"5104",   name:"STOP PULIZIA",  color:"#0080ff" }
+];
+
+const statusDot = document.getElementById("statusDot");
+const statusText = document.getElementById("statusText");
+const scanQrBtn = document.getElementById("scanQrBtn");
+const manualBtn = document.getElementById("manualBtn");
+const closeQrBtn = document.getElementById("closeQrBtn");
+const scanAgainBtn = document.getElementById("scanAgainBtn");
+const disconnectBtn = document.getElementById("disconnectBtn");
+const qrPanel = document.getElementById("qrPanel");
+const manualPanel = document.getElementById("manualPanel");
+const qrResult = document.getElementById("qrResult");
+const connectionPanel = document.getElementById("connectionPanel");
+const colorPanel = document.getElementById("colorPanel");
+const consolePanel = document.getElementById("consolePanel");
+const consoleOutput = document.getElementById("consoleOutput");
+const sensorSquare = document.getElementById("sensorSquare");
+const commandName = document.getElementById("commandName");
+const lastPayload = document.getElementById("lastPayload");
+const viewBroker = document.getElementById("viewBroker");
+const viewUsername = document.getElementById("viewUsername");
+const viewTopic = document.getElementById("viewTopic");
+const viewQos = document.getElementById("viewQos");
+const viewClientId = document.getElementById("viewClientId");
+const manualBroker = document.getElementById("manualBroker");
+const manualUsername = document.getElementById("manualUsername");
+const manualPassword = document.getElementById("manualPassword");
+const manualTopic = document.getElementById("manualTopic");
+const manualQos = document.getElementById("manualQos");
+const manualError = document.getElementById("manualError");
+const manualConnectBtn = document.getElementById("manualConnectBtn");
+const manualCancelBtn = document.getElementById("manualCancelBtn");
+
+function timestamp() { return new Date().toLocaleString("it-IT"); }
+
+function addLog(level, message) {
+  const row = document.createElement("div");
+  row.textContent = `[${timestamp()}] [${level}] ${message}`;
+  consoleOutput.appendChild(row);
+  consoleOutput.scrollTop = consoleOutput.scrollHeight;
+}
+
+function setConnectionStatus(connected, message) {
+  statusDot.classList.toggle("connected", connected);
+  statusText.textContent = message;
+  disconnectBtn.disabled = !connected;
+}
+
+function validateQrData(data) {
+  if (!data || typeof data !== "object") throw new Error("Contenuto QR non valido.");
+  if (data.type && data.type !== "walkeremote-mqtt") throw new Error("QR non Walkeremote.");
+  const broker = String(data.broker || "").trim();
+  const username = String(data.username || "").trim();
+  const password = String(data.password || "");
+  const topic = String(data.topic || "").trim();
+  const qos = String(data.qos ?? "0");
+  if (!broker || !username || !password || !topic) throw new Error("Dati MQTT incompleti.");
+  if (!["0","1","2"].includes(qos)) throw new Error("QoS non valido.");
+  return {
+    broker, username, password, topic, qos:Number(qos),
+    clientId:"walkeremote_color_" + Math.random().toString(16).slice(2,10)
+  };
+}
+
+function openManualConfiguration() {
+  manualError.textContent = "";
+  manualPanel.style.display = "block";
+  manualBroker.focus();
+}
+
+function closeManualConfiguration() {
+  manualPanel.style.display = "none";
+  manualError.textContent = "";
+}
+
+function connectFromManualForm() {
+  try {
+    mqttConfig = validateQrData({
+      type:"walkeremote-mqtt",
+      broker:manualBroker.value,
+      username:manualUsername.value,
+      password:manualPassword.value,
+      topic:manualTopic.value,
+      qos:manualQos.value
+    });
+    closeManualConfiguration();
+    showReceivedData(mqttConfig);
+    connectMqtt(mqttConfig);
+  } catch (err) {
+    manualError.textContent = err.message;
+  }
+}
+
+function showReceivedData(config) {
+  viewBroker.textContent = config.broker;
+  viewUsername.textContent = config.username;
+  viewTopic.textContent = config.topic;
+  viewQos.textContent = String(config.qos);
+  viewClientId.textContent = config.clientId;
+  connectionPanel.style.display = "block";
+  colorPanel.style.display = "block";
+  consolePanel.style.display = "block";
+}
+
+function fallbackColor(text) {
+  let hash = 0;
+  for (let i=0; i<text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+  return `hsl(${Math.abs(hash) % 360} 100% 50%)`;
+}
+
+function showCommandColor(payloadText) {
+  const payload = String(payloadText || "").trim();
+  const command = COMMAND_COLORS.find(item => payload.startsWith(item.code));
+  const color = command ? command.color : fallbackColor(payload);
+  sensorSquare.style.backgroundColor = color;
+  commandName.textContent = command ? command.name : "COMANDO MQTT";
+  lastPayload.textContent = payload || "(payload vuoto)";
+}
+
+function subscribeToTopic() {
+  if (!client || !client.connected || !mqttConfig) return;
+  client.subscribe(mqttConfig.topic, {qos:mqttConfig.qos}, (err, granted) => {
+    if (err) return addLog("ERRORE", "Sottoscrizione: " + err.message);
+    currentSubscribedTopic = mqttConfig.topic;
+    addLog("MQTT", "Sottoscrizione completata: " + JSON.stringify(granted));
+  });
+}
+
+function connectMqtt(config) {
+  if (client) { try { client.end(true); } catch {} }
+  setConnectionStatus(false, "Connessione in corso…");
+  client = mqtt.connect(config.broker, {
+    username:config.username,
+    password:config.password,
+    clientId:config.clientId,
+    clean:true,
+    connectTimeout:10000,
+    reconnectPeriod:3000,
+    keepalive:30,
+    protocolVersion:4
+  });
+  client.on("connect", () => {
+    setConnectionStatus(true, "Connesso");
+    addLog("MQTT", "Connesso al broker");
+    subscribeToTopic();
+  });
+  client.on("reconnect", () => setConnectionStatus(false, "Riconnessione…"));
+  client.on("offline", () => setConnectionStatus(false, "Offline"));
+  client.on("close", () => setConnectionStatus(false, "Connessione chiusa"));
+  client.on("error", err => {
+    setConnectionStatus(false, "Errore");
+    addLog("ERRORE", err.message);
+  });
+  client.on("message", (receivedTopic, payload, packet) => {
+    const text = payload.toString();
+    addLog("RX", `${receivedTopic} | QoS ${packet.qos} | ${text}`);
+    showCommandColor(text);
+  });
+}
+
+async function stopQrScanner() {
+  if (html5QrCode && qrScannerRunning) {
+    try { await html5QrCode.stop(); await html5QrCode.clear(); } catch {}
+  }
+  qrScannerRunning = false;
+  qrPanel.style.display = "none";
+}
+
+async function startQrScanner() {
+  qrPanel.style.display = "block";
+  qrResult.textContent = "Apertura fotocamera…";
+  qrAlreadyRead = false;
+  if (typeof Html5Qrcode === "undefined") {
+    qrResult.textContent = "Libreria QR scanner non disponibile.";
+    return;
+  }
+  try {
+    html5QrCode = new Html5Qrcode("qrReader");
+    await html5QrCode.start(
+      {facingMode:"environment"},
+      {fps:10, qrbox:{width:250,height:250}},
+      async decodedText => {
+        if (qrAlreadyRead) return;
+        qrAlreadyRead = true;
+        try {
+          mqttConfig = validateQrData(JSON.parse(decodedText));
+          qrResult.textContent = "✓ Configurazione Walkeremote ricevuta.";
+          await stopQrScanner();
+          showReceivedData(mqttConfig);
+          connectMqtt(mqttConfig);
+        } catch (err) {
+          qrAlreadyRead = false;
+          qrResult.textContent = "QR non valido: " + err.message;
+        }
+      },
+      () => {}
+    );
+    qrScannerRunning = true;
+    qrResult.textContent = "Fotocamera attiva. Inquadra il QR Walkeremote.";
+  } catch (err) {
+    qrScannerRunning = false;
+    qrResult.textContent = "Errore fotocamera: " + err.message;
+  }
+}
+
+scanQrBtn.addEventListener("click", startQrScanner);
+manualBtn.addEventListener("click", openManualConfiguration);
+manualConnectBtn.addEventListener("click", connectFromManualForm);
+manualCancelBtn.addEventListener("click", closeManualConfiguration);
+closeQrBtn.addEventListener("click", stopQrScanner);
+scanAgainBtn.addEventListener("click", async () => {
+  if (client) { try { client.end(true); } catch {} }
+  client = null;
+  mqttConfig = null;
+  currentSubscribedTopic = "";
+  connectionPanel.style.display = "none";
+  colorPanel.style.display = "none";
+  consolePanel.style.display = "none";
+  consoleOutput.textContent = "";
+  sensorSquare.style.backgroundColor = "#111827";
+  commandName.textContent = "In attesa di un comando";
+  lastPayload.textContent = "-";
+  setConnectionStatus(false, "Non configurato");
+  await startQrScanner();
+});
+disconnectBtn.addEventListener("click", () => {
+  if (!client) return;
+  client.end(false, {}, () => {
+    currentSubscribedTopic = "";
+    setConnectionStatus(false, "Disconnesso");
+    addLog("MQTT", "Disconnesso");
+  });
+});
+</script>
+</body>
+</html>
