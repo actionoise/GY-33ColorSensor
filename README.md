@@ -188,8 +188,4 @@ Project status
 This is an experimental prototype. Reliable operation requires calibration for the specific
 smartphone screen and sensor position used in the setup.
 
-
-
-License
-
-Add the license that best fits your project before publishing or distributing the source code.
+video demo on this link : https://www.youtube.com/watch?v=h3UlmA2ZBJQ
